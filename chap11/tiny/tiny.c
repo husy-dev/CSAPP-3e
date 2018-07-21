@@ -44,6 +44,7 @@ int main(int argc, char **argv)
                     port, MAXLINE, 0);
         printf("Accepted connection from (%s, %s)\n", hostname, port);
 	doit(connfd);                                             //line:netp:tiny:doit
+	sleep(1000);	
 	Close(connfd);                                            //line:netp:tiny:close
     }
 }
