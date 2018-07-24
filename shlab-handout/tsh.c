@@ -173,7 +173,7 @@ void eval(char *cmdline)
     sigset_t mask;
     
     strcpy(buf, cmdline);
-    bg = parseline(buf, argv); 
+    bg = parseline(buf, argv);
     if (argv[0] == NULL)  
 	    return;   //忽略空白行
     
@@ -185,8 +185,12 @@ void eval(char *cmdline)
 
         if ((pid = fork()) == 0) {  //子进程执行对应程序
             sigprocmask(SIG_UNBLOCK,&mask,NULL);
-            setpgid(0,0); //为子进程新创建一个进程组，进程id与子进程pid一致 
             
+            if(setpgid(0, 0) < 0){
+                printf("setpgid error");
+                exit(0);
+            }
+
             if (execve(argv[0], argv, environ) < 0) {
                 printf("%s: Command not found.\n", argv[0]);
                 exit(0);
@@ -195,8 +199,9 @@ void eval(char *cmdline)
         }else{
             addjob(jobs, pid, bg?BG:FG,cmdline);        /*add job into jobs*/  
             sigprocmask(SIG_UNBLOCK,&mask,NULL);        /*unblock the SIGCHLD signal in parent*/
-            bg? printf("[%d] (%d) %s", pid2jid(pid), pid,cmdline):waitfg(pid);            
         }
+            
+        bg? printf("[%d] (%d) %s", pid2jid(pid), pid,cmdline):waitfg(pid);            
         // 很奇怪，这中写法就是错的，会出现print了bg=1，但是没有print "[%d] (%d) %s", maxjid(jobs), pid, cmdline这一部分。
         // }else{
         //     if (bg!=1) { //如果是前台进程
@@ -242,7 +247,7 @@ int parseline(const char *cmdline, char **argv)
 
     /* Build the argv list */
     argc = 0;
-    if (*buf == '\'') {
+    if (*buf == '\'') { 
 	    buf++;
 	    delim = strchr(buf, '\'');
     }
@@ -254,7 +259,8 @@ int parseline(const char *cmdline, char **argv)
 	argv[argc++] = buf;
 	*delim = '\0';
 	buf = delim + 1;
-	while (*buf && (*buf == ' ')) /* ignore spaces */
+	
+    while (*buf && (*buf == ' ')) /* ignore spaces */
 	       buf++;
 
 	if (*buf == '\'') {
@@ -390,10 +396,6 @@ void waitfg(pid_t pid)
  */
 void sigchld_handler(int sig) 
 {
-    //删除job list 里的job
-    // pid_t pid =getpid();
-    // pid_t pid = fgpid(jobs);
-    
     pid_t pid;
     int status;
     //回收子进程的资源
@@ -401,20 +403,17 @@ void sigchld_handler(int sig)
         if(WIFEXITED(status)){  /*process is exited in normal way*/
             deletejob(jobs,pid);
         }
-        if(WIFSIGNALED(status)){/*process is terminated by a signal*/
+        else if(WIFSIGNALED(status)){/*process is terminated by a signal*/
             printf("Job [%d] (%d) terminated by signal %d\n",pid2jid(pid),pid,WTERMSIG(status));
             deletejob(jobs,pid);
         }
-        if(WIFSTOPPED(status)){/*process is stop because of a signal*/
+        // else if(WIFSTOPPED(status)){/*process is stop because of a signal*/
+           else{
             printf("Job [%d] (%d) stopped by signal %d\n",pid2jid(pid),pid,WSTOPSIG(status));
             struct job_t *job = getjobpid(jobs,pid);
             if(job !=NULL )job->state = ST;
         }
     }
-    if(errno != ECHILD){
-        unix_error("waitpid error");
-    }
-    
     return;
 }
 

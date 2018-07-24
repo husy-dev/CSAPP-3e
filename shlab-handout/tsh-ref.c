@@ -186,6 +186,7 @@ void eval(char *cmdline)
             sigprocmask(SIG_UNBLOCK, &mask, NULL);
             setpgid(0, 0);
 
+            printf("current process's father pid is %d",getppid());
             if (execve(argv[0], argv, environ) < 0)
             {
                 printf("%s: Command not found.\n", argv[0]);
