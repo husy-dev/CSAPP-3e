@@ -1,7 +1,8 @@
 /* 
  * tsh - A tiny shell program with job control
  * 
- * <Put your name and login ID here>
+ * author：Husy
+ * 
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -110,7 +111,7 @@ int main(int argc, char **argv)
         case 'p':             /* don't print a prompt */
             emit_prompt = 0;  /* handy for automatic testing */
 	    break;
-	default:
+	    default:
             usage();
 	}
     }
@@ -165,8 +166,59 @@ int main(int argc, char **argv)
 */
 void eval(char *cmdline) 
 {
+    char *argv[MAXARGS]; /* Argument list execve() */
+    char buf[MAXLINE];   /* Holds modified command line */
+    int bg;              /* Should the job run in bg or fg? */
+    pid_t pid;           /* Process id */
+    sigset_t mask;
+    
+    strcpy(buf, cmdline);
+    bg = parseline(buf, argv); 
+    if (argv[0] == NULL)  
+	    return;   //忽略空白行
+    
+    if (!builtin_cmd(argv)) {  //如果不是内置命令，就执行下面操作。如果是内置命令，builtin_cmd里已经开始执行了。
+        // 暂时阻塞SIGCHLD，以防止父子进程对job list的竞争
+        sigemptyset(&mask);
+        sigaddset(&mask,SIGCHLD);
+        sigprocmask(SIG_BLOCK,&mask,NULL);  
+
+        if ((pid = fork()) == 0) {  //子进程执行对应程序
+            sigprocmask(SIG_UNBLOCK,&mask,NULL);
+            setpgid(0,0); //为子进程新创建一个进程组，进程id与子进程pid一致 
+            
+            if (execve(argv[0], argv, environ) < 0) {
+                printf("%s: Command not found.\n", argv[0]);
+                exit(0);
+            }
+
+        }else{
+            addjob(jobs, pid, bg?BG:FG,cmdline);        /*add job into jobs*/  
+            sigprocmask(SIG_UNBLOCK,&mask,NULL);        /*unblock the SIGCHLD signal in parent*/
+            bg? printf("[%d] (%d) %s", pid2jid(pid), pid,cmdline):waitfg(pid);            
+        }
+        // 很奇怪，这中写法就是错的，会出现print了bg=1，但是没有print "[%d] (%d) %s", maxjid(jobs), pid, cmdline这一部分。
+        // }else{
+        //     if (bg!=1) { //如果是前台进程
+        //         addjob(jobs,pid,FG,cmdline);
+        //         printf("bg =0 current jid is %d,current pid is %d\n",maxjid(jobs),getpid());
+        //         sigprocmask(SIG_UNBLOCK,&mask,NULL);
+        //         waitfg(pid);
+	    //     }
+	    //     else
+        //         printf("[%d] (%d) %s", maxjid(jobs), pid, cmdline);
+        //         //是后台进程的话，就加入父进程的job列表里。由于父子进程不共享数据，这个job的增删改查都应该由shell这个进程来处理。
+        //         //而这个job的结束是异步的，因此由信号处理函数来处理job的删除
+        //         printf("bg =1 current jid is %d,current pid is %d\n",maxjid(jobs),getpid());
+        //         addjob(jobs,pid,BG,cmdline);
+        //         sigprocmask(SIG_UNBLOCK,&mask,NULL);
+        //     }
+
+    }
+
     return;
 }
+
 
 /* 
  * parseline - Parse the command line and build the argv array.
@@ -186,13 +238,13 @@ int parseline(const char *cmdline, char **argv)
     strcpy(buf, cmdline);
     buf[strlen(buf)-1] = ' ';  /* replace trailing '\n' with space */
     while (*buf && (*buf == ' ')) /* ignore leading spaces */
-	buf++;
+	    buf++;
 
     /* Build the argv list */
     argc = 0;
     if (*buf == '\'') {
-	buf++;
-	delim = strchr(buf, '\'');
+	    buf++;
+	    delim = strchr(buf, '\'');
     }
     else {
 	delim = strchr(buf, ' ');
@@ -220,7 +272,7 @@ int parseline(const char *cmdline, char **argv)
 
     /* should the job run in the background? */
     if ((bg = (*argv[argc-1] == '&')) != 0) {
-	argv[--argc] = NULL;
+	    argv[--argc] = NULL;
     }
     return bg;
 }
@@ -231,6 +283,19 @@ int parseline(const char *cmdline, char **argv)
  */
 int builtin_cmd(char **argv) 
 {
+    if(!strcmp(argv[0],"quit"))  //quit->直接退出当前进程，也就是shell
+        exit(0);
+    if(!strcmp(argv[0],"&"))
+        return 1;
+    if(!strcmp(argv[0],"bg")||!strcmp(argv[0],"fg")){
+        do_bgfg(argv);
+        return 1;
+    }
+    if(!strcmp(argv[0],"jobs")){
+        listjobs(jobs);
+        return 1;
+    }
+
     return 0;     /* not a builtin command */
 }
 
@@ -239,6 +304,62 @@ int builtin_cmd(char **argv)
  */
 void do_bgfg(char **argv) 
 {
+    if (argv[1] == NULL)
+    {
+        printf("%s command requires PID or %%jobid argument\n", argv[0]);
+        return;
+    }
+
+    pid_t pid;
+    if (*argv[1] == '%')
+    {
+        int jid;
+        if ((jid = atoi((char *)argv[1] + 1)) <= 0 )
+        {
+            printf("%s: argument must be a PID or %%jobid\n", argv[0]);
+            return;
+        }
+        struct job_t *this_job = getjobjid(jobs, jid);
+        if (this_job == NULL)
+        {
+            printf("%s: no such job\n", argv[1]);
+            return;
+        }
+        pid = this_job->pid;
+    }
+    else
+    {
+        if ((pid = atoi(argv[1])) <= 0)
+        {
+            printf("%s: argument must be a PID or %%jobid\n", argv[0]);
+            return;
+        }
+        struct job_t *this_job = getjobpid(jobs, pid);
+        if (this_job == NULL)
+        {
+            printf("%s: no such job\n", argv[1]);
+            return;
+        }
+    }
+
+    struct job_t *this_job = getjobpid(jobs, pid);
+    if (this_job == NULL)
+    {
+        printf("%s: no such job\n", argv[1]);
+        return;
+    }
+    if (!strcmp(argv[0], "bg"))
+    {
+        kill(-pid, SIGCONT);
+        this_job->state = BG;
+        printf("[%d] (%d) %s", this_job->jid, pid, this_job->cmdline);
+    }
+    else        // fg command
+    {
+        kill(-pid, SIGCONT);
+        this_job->state = FG;
+        waitfg(pid);
+    }
     return;
 }
 
@@ -247,6 +368,12 @@ void do_bgfg(char **argv)
  */
 void waitfg(pid_t pid)
 {
+    // int status;
+    // if (waitpid(pid, &status, 0) < 0)
+		// unix_error("waitfg: waitpid error");
+    while(pid == fgpid(jobs)){
+        sleep(0);
+    }
     return;
 }
 
@@ -263,6 +390,31 @@ void waitfg(pid_t pid)
  */
 void sigchld_handler(int sig) 
 {
+    //删除job list 里的job
+    // pid_t pid =getpid();
+    // pid_t pid = fgpid(jobs);
+    
+    pid_t pid;
+    int status;
+    //回收子进程的资源
+    while((pid =waitpid(-1,&status,WNOHANG|WUNTRACED))>0){
+        if(WIFEXITED(status)){  /*process is exited in normal way*/
+            deletejob(jobs,pid);
+        }
+        if(WIFSIGNALED(status)){/*process is terminated by a signal*/
+            printf("Job [%d] (%d) terminated by signal %d\n",pid2jid(pid),pid,WTERMSIG(status));
+            deletejob(jobs,pid);
+        }
+        if(WIFSTOPPED(status)){/*process is stop because of a signal*/
+            printf("Job [%d] (%d) stopped by signal %d\n",pid2jid(pid),pid,WSTOPSIG(status));
+            struct job_t *job = getjobpid(jobs,pid);
+            if(job !=NULL )job->state = ST;
+        }
+    }
+    if(errno != ECHILD){
+        unix_error("waitpid error");
+    }
+    
     return;
 }
 
@@ -273,6 +425,15 @@ void sigchld_handler(int sig)
  */
 void sigint_handler(int sig) 
 {
+    //获取当前进程的信息
+    pid_t pid = fgpid(jobs);
+    // int jid = pid2jid(pid);
+
+    //结束当前的进程
+    if (pid != 0) {
+        kill(-pid, SIGINT);  //因为kill默认操作是结束进程，而一个负的pid代表要发送给pid组的所有进程。
+    }
+
     return;
 }
 
@@ -283,6 +444,16 @@ void sigint_handler(int sig)
  */
 void sigtstp_handler(int sig) 
 {
+    pid_t pid = fgpid(jobs);
+
+    if(pid!=0 ){
+        struct job_t *job = getjobpid(jobs,pid);
+        if(job->state == ST){  /*already stop the job ,dot do it again*/
+            return;
+        }else{
+            kill(-pid,SIGTSTP);
+        }
+    }
     return;
 }
 
@@ -330,22 +501,23 @@ int addjob(struct job_t *jobs, pid_t pid, int state, char *cmdline)
 	return 0;
 
     for (i = 0; i < MAXJOBS; i++) {
-	if (jobs[i].pid == 0) {
-	    jobs[i].pid = pid;
-	    jobs[i].state = state;
-	    jobs[i].jid = nextjid++;
-	    if (nextjid > MAXJOBS)
-		nextjid = 1;
-	    strcpy(jobs[i].cmdline, cmdline);
-  	    if(verbose){
-	        printf("Added job [%d] %d %s\n", jobs[i].jid, jobs[i].pid, jobs[i].cmdline);
+        if (jobs[i].pid == 0) {
+            jobs[i].pid = pid;
+            jobs[i].state = state;
+            jobs[i].jid = nextjid++;
+            if (nextjid > MAXJOBS)
+                nextjid = 1;
+            strcpy(jobs[i].cmdline, cmdline);
+            if(verbose){
+                printf("Added job [%d] %d %s\n", jobs[i].jid, jobs[i].pid, jobs[i].cmdline);
             }
             return 1;
-	}
+        }
     }
     printf("Tried to create too many jobs\n");
     return 0;
 }
+
 
 /* deletejob - Delete a job whose PID=pid from the job list */
 int deletejob(struct job_t *jobs, pid_t pid) 
