@@ -317,7 +317,7 @@ void do_bgfg(char **argv)
     }
 
     pid_t pid;
-    if (*argv[1] == '%')
+    if (*argv[1] == '%') //是job号
     {
         int jid;
         if ((jid = atoi((char *)argv[1] + 1)) <= 0 )
